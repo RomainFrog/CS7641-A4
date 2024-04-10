@@ -1,0 +1,7 @@
+.pyc
+.pth
+.pckl
+.pkl
+figures/
+checkpoints/
+__pycache__/
