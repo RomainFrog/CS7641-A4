@@ -255,12 +255,13 @@ def plot_multiple_policies(
 
 
     for i, idx in enumerate(indices):
-        # val_max, policy_map = Plots.get_policy_map(
-        #     pi_track[idx], V_track[idx], fl_actions, map_size
-        # )
+        
+        val_max, policy_map = Plots.get_policy_map(
+            {i: np.argmax(pi_track[idx][i]) for i in range(256)}, V_track[idx].reshape(map_size), fl_actions, map_size
+        )
         p = pi_track[idx]
         sns.heatmap(
-            np.array(list(pi_track[idx].values())).reshape(map_size[0], map_size[1]),
+            val_max,
             # annot=policy_map,
             cmap=sns.color_palette("viridis", as_cmap=True),
             fmt="",
@@ -279,7 +280,7 @@ def plot_multiple_policies(
     if filename:
         plt.tight_layout()
         plt.savefig(
-            f"figures/frozen_lake/{filename}.pdf", format="pdf", bbox_inches="tight"
+            f"figures/mountain_cart/{filename}.pdf", format="pdf", bbox_inches="tight"
         )
     plt.show()
 
@@ -302,15 +303,6 @@ def policy_changes_plot(pi_track, title, upper_bound=100):
     plt.show()
 
 
-def multi_seed_q_learning(env, n_seeds, **kwargs):
-    pi_tracks = []
-    Q_tracks = []
-    for seed in range(n_seeds):
-        kwargs["seed"] = seed
-        _, _, _, Q_track, pi_track, _ = RL(env).q_learning(**kwargs)
-        pi_tracks.append(pi_track)
-        Q_tracks.append(Q_track)
-    return Q_tracks, pi_tracks
 
 
 # new success rate plot that takes in multiple pi_tracks and plots as many plot as there are pi_tracks (on a single plot)
@@ -469,8 +461,8 @@ def precompute_mutli_seed_success_rates(env, pi_tracks, upperbound=100, step=1):
     return (success_rate_mean, success_rate_std, mean_run_length, std_run_length)
 
 
-def one_shot_eval(env, pi):
-    episode_rewards, run_length, endings = TestEnv.test_env(env=env, n_iters=100, pi=pi)
+def one_shot_eval(env, pi,n_iters=100):
+    episode_rewards, run_length, endings = TestEnv.test_env(env=env, n_iters=n_iters, pi=pi)
     endings = np.array(endings)
     # num_ones = np.count_nonzero(episode_rewards == env.custom_rewards[b"G"])
     # num_zeros = np.count_nonzero(episode_rewards == env.custom_rewards[b"F"])
@@ -478,12 +470,11 @@ def one_shot_eval(env, pi):
     num_ones = np.count_nonzero(endings == "G")
     num_zeros = np.count_nonzero(endings == "T")
     num_neg_ones = np.count_nonzero(endings == "H")
-    print(f"Success Rate: {num_ones} %")
-    print(f"Out of moves: {num_zeros} %")
-    print(f"Fell in hole: {num_neg_ones} %")
+    print(f"Success Rate: {(num_ones / n_iters * 100):1.1f} %")
+    print(f"Out of moves: {(num_zeros / n_iters * 100):1.1f} %")
+    print(f"Fell in hole: {(num_neg_ones / n_iters * 100):1.1f} %")
     print("Mean run length: ", np.mean(run_length))
     print(f"Mean reward: {np.mean(episode_rewards)}")
-    print(f"Number of positive rewards: {len(episode_rewards > 0)} %")
 
 
 
@@ -506,3 +497,61 @@ def grid_results_to_df(g):
         df2 = pd.DataFrame(new_row, index=[0])
         df = pd.concat([df, df2], ignore_index=True)
     return df
+
+
+
+
+
+
+###################### Q-LEARNING ######################
+
+from pathos.multiprocessing import ProcessingPool
+from functools import partial
+
+def worker(seed, env, kwargs):
+    print(f"Running Q-learning for seed {seed}")
+    kwargs["seed"] = seed
+    Q, V, pi, Q_track, pi_track, steps_per_episode = RL(env).q_learning(**kwargs)
+    return {
+        "Q": Q,
+        "V": V,
+        "pi": pi,
+        "Q_track": Q_track,
+        "pi_track": pi_track,
+        "steps_per_episode": steps_per_episode,
+    }
+
+def multi_seed_q_learning(env, n_seeds, **kwargs):
+    results = {}
+    with ProcessingPool() as pool:
+        worker_partial = partial(worker, env=env, kwargs=kwargs)
+        results_list = pool.map(worker_partial, range(n_seeds))
+    
+    for seed, result in enumerate(results_list):
+        results[seed] = result
+    
+    return results
+
+
+
+
+
+def get_steps_per_episode_from_multi_seed(results):
+    steps_per_episode = []
+    for seed in results:
+        steps_per_episode.append(results[seed]['steps_per_episode'])
+    return steps_per_episode
+
+
+def get_mean_std_steps(steps_per_episode):
+    mean_steps = np.mean(steps_per_episode, axis=0)
+    std_steps = np.std(steps_per_episode, axis=0)
+    return mean_steps, std_steps
+
+def eval_multi_seed(env, results, n_iters=100, convert_state_obs=lambda state : state):
+    success_rate = []
+    for seed in results:
+        _, steps, _ = TestEnv.test_env(env=env, n_iters=n_iters, pi=results[seed]['pi'], convert_state_obs=convert_state_obs)
+        mean_steps_reward = np.mean(steps)
+        success_rate.append(mean_steps_reward)
+    return np.mean(success_rate), np.std(success_rate)
